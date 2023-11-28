@@ -4,9 +4,7 @@ use std::io::{Cursor, ErrorKind};
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::time::Duration;
 
-mod tests;
-
-pub use tests::tests;
+pub mod tests;
 
 pub struct Connection {
     socket: UdpSocket,
