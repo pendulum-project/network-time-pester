@@ -161,6 +161,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "hex"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
 name = "inout"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -196,14 +202,14 @@ name = "network-time-pester"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "hex",
  "ntp-proto",
 ]
 
 [[package]]
 name = "ntp-proto"
 version = "1.1.0-alpha.20231123"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3d73f511e54c0791aa29c7e1b19a9ef9aeb54e2ccd9b5b06167e127dd94da57"
+source = "git+https://github.com/pendulum-project/ntpd-rs?branch=pester#52b192c9fc5e733dc4d7e468d866bb94a41757e3"
 dependencies = [
  "aead",
  "aes-siv",
