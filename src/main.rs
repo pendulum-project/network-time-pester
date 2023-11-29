@@ -2,10 +2,11 @@ use network_time_pester as pest;
 use pest::TestResult;
 
 fn main() -> anyhow::Result<()> {
-    // TODO: Add a cli for server and timeout
-    // let server = "[::1]:123";
+    // TODO: Add a cli for server(s) and timeout
+    let server = "[::1]:123";
     // let server = "time.windows.com:123";
-    let server = "pool.ntp.org:123";
+    // let server = "pool.ntp.org:123";
+    // let server = "ptbtime1.ptb.de:123";
 
     let mut conn = pest::Connection::new(server)?;
 

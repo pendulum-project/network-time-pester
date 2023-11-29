@@ -1,6 +1,7 @@
 use crate::{fail, fail_no_response, Connection, TestCase, TestResult, PASS};
 use anyhow::bail;
 use ntp_proto::{ExtensionField, NtpAssociationMode, NtpHeader, NtpPacket};
+use std::array;
 use std::borrow::Cow;
 
 /// Generate a list of all currently implemented test cases
@@ -9,6 +10,7 @@ pub fn all_tests() -> Vec<Box<dyn TestCase>> {
         Box::new(test_responds_to_version_4),
         Box::new(test_ignores_version_5),
         Box::new(test_unknown_extensions_are_ignored),
+        Box::new(test_unique_id_is_returned),
     ]
 }
 
@@ -116,6 +118,59 @@ pub fn test_unknown_extensions_are_ignored(conn: &mut Connection) -> anyhow::Res
 
     if let Some(ef) = packet.untrusted_extension_fields().next() {
         return fail(format!("Received an extension field in response to an invalid extension field. (EF: {ef:?})"), response.clone());
+    }
+
+    PASS
+}
+
+/// Test if a server returned a unique id field as is even without NTS
+///
+/// A server supporting NTS should still reply with the unique id extension that
+/// the client sent.
+pub fn test_unique_id_is_returned(conn: &mut Connection) -> anyhow::Result<TestResult> {
+    let (mut request, id) = NtpPacket::poll_message(Default::default());
+    let uid = ExtensionField::UniqueIdentifier(Cow::Owned(
+        array::from_fn::<_, 32, _>(|i| i as u8).to_vec(),
+    ));
+    request.push_additional(uid.clone());
+
+    let Some(response) = conn.pester(request)? else {
+        return fail_no_response();
+    };
+
+    let packet = match NtpPacket::try_from(&response) {
+        Ok(packet) => packet,
+        Err(e) => return fail(format!("Could not parse response: {e}"), response),
+    };
+
+    if !packet.valid_server_response(id, false) {
+        return fail("Server replied with wrong id", response);
+    }
+
+    if packet.authenticated_extension_fields().next().is_some() {
+        bail!("Parsed an authenticated extension from a non NTS packet, this is a bug!");
+    }
+
+    let fields: Vec<_> = packet.untrusted_extension_fields().collect();
+    if fields.is_empty() {
+        return fail(
+            "Server did not send a unique id extension field in its reply.",
+            response,
+        );
+    }
+
+    if fields.len() >= 2 {
+        return fail(
+            format!("Server returned more then one extension fields. (Fields: {fields:?})"),
+            response,
+        );
+    }
+
+    if fields[0] != &uid {
+        return fail(
+            "The unique id of the response does not match the one in the request!",
+            response,
+        );
     }
 
     PASS
