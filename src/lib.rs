@@ -1,11 +1,18 @@
-use anyhow::{bail, Context};
+use anyhow::Context;
 use ntp_proto::{NoCipher, NtpPacket, PacketParsingError};
 use std::fmt::{Debug, Formatter};
 use std::io::{Cursor, ErrorKind};
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::time::Duration;
 
+// This allows us to generate nice docs around our tests while we still get
+// warnings for unused test cases
+#[cfg(doc)]
 pub mod tests;
+#[cfg(not(doc))]
+mod tests;
+
+pub use tests::all_tests;
 
 pub struct Connection {
     socket: UdpSocket,
@@ -30,6 +37,7 @@ impl From<NtpPacket<'_>> for Request {
     }
 }
 
+#[derive(Clone)]
 pub struct Response(pub Vec<u8>);
 
 impl<'a> TryFrom<&'a Response> for NtpPacket<'a> {
@@ -56,11 +64,12 @@ impl Connection {
     const TIMEOUT: Duration = Duration::from_millis(100);
 
     pub fn new(to_addr: impl ToSocketAddrs) -> anyhow::Result<Self> {
-        let mut to_addr = to_addr.to_socket_addrs().context("parsing peer address")?;
-        let to_addr = match (to_addr.next(), to_addr.next()) {
-            (Some(addr), None) => addr,
-            _ => bail!("wrong number of peer addresses, should be exactly one"),
-        };
+        let mut to_addr = to_addr
+            .to_socket_addrs()
+            .context("Could not parse peer address")?;
+        let to_addr = to_addr
+            .next()
+            .context("Domain did not resolve into any addresses")?;
 
         let from_addr: SocketAddr = match to_addr {
             SocketAddr::V4(_) => "0.0.0.0:0",
@@ -69,13 +78,13 @@ impl Connection {
         .parse()
         .expect("no errors where made writing this address");
 
-        let socket = UdpSocket::bind(from_addr).context("Opening socket")?;
+        let socket = UdpSocket::bind(from_addr).context("Could not open socket")?;
         socket
             .connect(to_addr)
             .with_context(|| format!("Can not connect to {to_addr} from {from_addr}"))?;
         socket
             .set_read_timeout(Some(Self::TIMEOUT))
-            .context("Setting timeout")?;
+            .context("Could not set timeout")?;
 
         Ok(Self { socket })
     }
@@ -83,14 +92,14 @@ impl Connection {
     pub fn pester(&mut self, req: impl Into<Request>) -> anyhow::Result<Option<Response>> {
         self.socket
             .send(req.into().0.as_slice())
-            .context("Sending request")?;
+            .context("Could not send request")?;
 
         let mut response = vec![0; Self::MAX_LEN];
         let len = match self.socket.recv(response.as_mut_slice()) {
             Ok(len) => len,
             Err(err) => match err.kind() {
                 ErrorKind::TimedOut | ErrorKind::WouldBlock => return Ok(None),
-                _ => return Err(err).context("Receiving response"),
+                _ => return Err(err).context("Could not receive response"),
             },
         };
         response.truncate(len);
