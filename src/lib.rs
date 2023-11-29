@@ -1,5 +1,6 @@
 use anyhow::{bail, Context};
 use ntp_proto::{NoCipher, NtpPacket, PacketParsingError};
+use std::fmt::{Debug, Formatter};
 use std::io::{Cursor, ErrorKind};
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::time::Duration;
@@ -41,6 +42,15 @@ impl<'a> TryFrom<&'a Response> for NtpPacket<'a> {
     }
 }
 
+impl Debug for Response {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Response")
+            .field("parsed", &NtpPacket::try_from(self))
+            .field("raw", &hex::encode(self.0.as_slice()))
+            .finish()
+    }
+}
+
 impl Connection {
     const MAX_LEN: usize = 9000;
     const TIMEOUT: Duration = Duration::from_millis(100);
@@ -53,8 +63,8 @@ impl Connection {
         };
 
         let from_addr: SocketAddr = match to_addr {
-            SocketAddr::V4(_) => "127.0.0.1:0",
-            SocketAddr::V6(_) => "[::1]:0",
+            SocketAddr::V4(_) => "0.0.0.0:0",
+            SocketAddr::V6(_) => "[::0]:0",
         }
         .parse()
         .expect("no errors where made writing this address");
@@ -62,7 +72,7 @@ impl Connection {
         let socket = UdpSocket::bind(from_addr).context("Opening socket")?;
         socket
             .connect(to_addr)
-            .with_context(|| format!("Connect to {to_addr}"))?;
+            .with_context(|| format!("Can not connect to {to_addr} from {from_addr}"))?;
         socket
             .set_read_timeout(Some(Self::TIMEOUT))
             .context("Setting timeout")?;
@@ -109,8 +119,15 @@ where
 
 pub enum TestResult {
     Pass,
-    Fail,
+    Fail(String, Option<Response>),
 }
 
 const PASS: anyhow::Result<TestResult> = Ok(TestResult::Pass);
-const FAIL: anyhow::Result<TestResult> = Ok(TestResult::Fail);
+
+fn fail(msg: impl ToString, response: Response) -> anyhow::Result<TestResult> {
+    Ok(TestResult::Fail(msg.to_string(), Some(response)))
+}
+
+fn fail_no_response() -> anyhow::Result<TestResult> {
+    Ok(TestResult::Fail("Server did not respond".to_string(), None))
+}
