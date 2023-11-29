@@ -209,7 +209,7 @@ dependencies = [
 [[package]]
 name = "ntp-proto"
 version = "1.1.0-alpha.20231123"
-source = "git+https://github.com/pendulum-project/ntpd-rs?branch=pester#52b192c9fc5e733dc4d7e468d866bb94a41757e3"
+source = "git+https://github.com/pendulum-project/ntpd-rs?branch=pester#3864a0e8c890befe14b0f0165d6e9031ed2c6045"
 dependencies = [
  "aead",
  "aes-siv",
