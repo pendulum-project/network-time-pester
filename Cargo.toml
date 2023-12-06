@@ -10,7 +10,11 @@ edition = "2021"
 anyhow = "1.0.75"
 clap = { version = "4.4.10", features = ["derive"] }
 hex = "0.4.3"
+libc = "0.2.150"
+nix = "0.27.1"
 ntp-proto = { version = "1.1.0-alpha.20231123", features = ["__internal-api", "__internal-test", "ntpv5"] }
+pete = "0.12.0"
+syscalls = "0.6.15"
 
 [patch.crates-io]
 ntp-proto = { git = "https://github.com/pendulum-project/ntpd-rs", branch = "pester" }
