@@ -1,44 +1,68 @@
-use std::{net::SocketAddr, str::FromStr};
+use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use clap::Parser;
 use network_time_pester as pest;
-use pest::TestResult;
+use network_time_pester::root_ca;
+use pest::{TestConfig, TestError};
 
 #[derive(Parser)]
 struct Cli {
-    #[arg(default_value_t = SocketAddr::from_str("[::1]:123").expect("invalid socket address"))]
-    server: SocketAddr,
+    server: Option<SocketAddr>,
+
+    #[arg(long)]
+    nts_ke_server: Option<String>,
+
+    #[arg(long, default_value_t = 4460)]
+    nts_ke_port: u16,
+
+    #[arg(long)]
+    ca_file: Option<PathBuf>,
+
+    #[arg(long, short, default_value = "100ms")]
+    timeout: humantime::Duration,
 }
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // TODO: Add a cli for server(s) and timeout
-    let mut conn = pest::Connection::new(cli.server)?;
+    let config = TestConfig {
+        udp: cli.server,
+        ke: cli
+            .nts_ke_server
+            .map(|hostname| (hostname, cli.nts_ke_port)),
+        root_cert_store: root_ca(cli.ca_file)?,
+        timeout: cli.timeout.into(),
+    };
 
     let mut passed = 0;
     let mut failed = 0;
+    let mut skipped = 0;
     for test in pest::all_tests() {
         let name = test.name().trim_start_matches("network_time_pester::");
 
-        match test.run(&mut conn) {
-            Ok(TestResult::Pass) => {
+        match test.run(&config) {
+            Ok(()) => {
                 passed += 1;
                 println!("✅ {name}");
             }
-            Ok(TestResult::Fail(msg, None)) => {
+            Err(TestError::Fail(msg, None)) => {
                 failed += 1;
                 println!("❌ {name}\n ↳ {msg}")
             }
-            Ok(TestResult::Fail(msg, Some(r))) => {
+            Err(TestError::Fail(msg, Some(r))) => {
                 failed += 1;
                 println!("❌ {name}\n ↳ {msg}\n ↳ {r:#?}")
             }
-            Err(e) => println!("❓ {name}:\n ↳ {e:#}"),
+            Err(TestError::Skipped) => {
+                skipped += 1;
+                println!("⏩ {name}")
+            }
+            Err(TestError::Error(e)) => println!("❓ {name}:\n ↳ {e:#}"),
         }
     }
 
-    println!("\n✅ Passed: {passed}\n❌ Failed: {failed}");
+    println!("\n✅ Passed: {passed}\n❌ Failed: {failed}\n⏩ Skipped: {skipped}");
 
     Ok(())
 }

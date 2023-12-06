@@ -1,10 +1,3 @@
-use anyhow::Context;
-use ntp_proto::{NoCipher, NtpPacket, PacketParsingError};
-use std::fmt::{Debug, Formatter};
-use std::io::{Cursor, ErrorKind};
-use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
-use std::time::Duration;
-
 // This allows us to generate nice docs around our tests while we still get
 // warnings for unused test cases
 #[cfg(doc)]
@@ -12,131 +5,111 @@ pub mod tests;
 #[cfg(not(doc))]
 mod tests;
 
+pub mod nts_ke;
+pub mod udp;
+pub mod util;
+
+use crate::nts_ke::NtsKeConnection;
+use ntp_proto::NtsRecord;
+use rustls::RootCertStore;
+use std::fmt::{Debug, Formatter};
+use std::fs::File;
+use std::io::BufReader;
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
 pub use tests::all_tests;
+pub use util::result::{TestError, TestResult};
 
-pub struct Connection {
-    socket: UdpSocket,
+pub struct TestConfig {
+    pub udp: Option<SocketAddr>,
+    pub ke: Option<(String, u16)>,
+    pub root_cert_store: Arc<RootCertStore>,
+    pub timeout: Duration,
 }
 
-pub struct Request(pub Vec<u8>);
-
-impl From<NtpPacket<'_>> for Request {
-    fn from(value: NtpPacket) -> Self {
-        let mut buffer = vec![0u8; Connection::MAX_LEN];
-        let mut cursor = Cursor::new(buffer.as_mut_slice());
-
-        value
-            .serialize(&mut cursor, &NoCipher, None)
-            .expect("Serializing into a vec can not fail");
-
-        let length = cursor.position() as usize;
-
-        buffer.truncate(length);
-
-        Self(buffer)
-    }
-}
-
-#[derive(Clone)]
-pub struct Response(pub Vec<u8>);
-
-impl<'a> TryFrom<&'a Response> for NtpPacket<'a> {
-    type Error = PacketParsingError<'a>;
-
-    fn try_from(value: &'a Response) -> Result<Self, Self::Error> {
-        let (packet, _cookie) = NtpPacket::deserialize(value.0.as_slice(), &NoCipher)?;
-
-        Ok(packet)
-    }
-}
-
-impl Debug for Response {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Response")
-            .field("parsed", &NtpPacket::try_from(self))
-            .field("raw", &hex::encode(self.0.as_slice()))
-            .finish()
-    }
-}
-
-impl Connection {
-    const MAX_LEN: usize = 9000;
-    const TIMEOUT: Duration = Duration::from_millis(100);
-
-    pub fn new(to_addr: impl ToSocketAddrs) -> anyhow::Result<Self> {
-        let mut to_addr = to_addr
-            .to_socket_addrs()
-            .context("Could not parse peer address")?;
-        let to_addr = to_addr
-            .next()
-            .context("Domain did not resolve into any addresses")?;
-
-        let from_addr: SocketAddr = match to_addr {
-            SocketAddr::V4(_) => "0.0.0.0:0",
-            SocketAddr::V6(_) => "[::0]:0",
+impl TestConfig {
+    pub fn udp(&self) -> TestResult<udp::UdpConnection> {
+        match self.udp {
+            Some(addr) => udp::UdpConnection::new(addr, self.timeout),
+            None => Err(TestError::Skipped),
         }
-        .parse()
-        .expect("no errors where made writing this address");
-
-        let socket = UdpSocket::bind(from_addr).context("Could not open socket")?;
-        socket
-            .connect(to_addr)
-            .with_context(|| format!("Can not connect to {to_addr} from {from_addr}"))?;
-        socket
-            .set_read_timeout(Some(Self::TIMEOUT))
-            .context("Could not set timeout")?;
-
-        Ok(Self { socket })
     }
 
-    pub fn pester(&mut self, req: impl Into<Request>) -> anyhow::Result<Option<Response>> {
-        self.socket
-            .send(req.into().0.as_slice())
-            .context("Could not send request")?;
+    pub fn ke(&self) -> TestResult<NtsKeConnection> {
+        match self.ke {
+            Some((ref host, port)) => {
+                NtsKeConnection::new(host, port, Arc::clone(&self.root_cert_store), self.timeout)
+            }
+            None => Err(TestError::Skipped),
+        }
+    }
+}
 
-        let mut response = vec![0; Self::MAX_LEN];
-        let len = match self.socket.recv(response.as_mut_slice()) {
-            Ok(len) => len,
-            Err(err) => match err.kind() {
-                ErrorKind::TimedOut | ErrorKind::WouldBlock => return Ok(None),
-                _ => return Err(err).context("Could not receive response"),
-            },
-        };
-        response.truncate(len);
+pub fn root_ca(cafile: Option<PathBuf>) -> anyhow::Result<Arc<RootCertStore>> {
+    let mut root_cert_store = RootCertStore::empty();
+    if let Some(cafile) = &cafile {
+        let mut pem = BufReader::new(File::open(cafile)?);
+        for cert in rustls_pemfile::certs(&mut pem) {
+            root_cert_store.add(cert?).unwrap();
+        }
+    } else {
+        root_cert_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    }
 
-        Ok(Some(Response(response)))
+    Ok(Arc::new(root_cert_store))
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct RawBytes(pub Box<[u8]>);
+
+impl Debug for RawBytes {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        hex::encode(&self.0).fmt(f)
+    }
+}
+
+impl From<Vec<u8>> for RawBytes {
+    fn from(value: Vec<u8>) -> Self {
+        Self(value.into_boxed_slice())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Response {
+    UdpUnparsable(RawBytes),
+    UdpResponse(ntp_proto::NtpPacket<'static>),
+    KeResponse(nts_ke::Response),
+    KeInvalid(Vec<NtsRecord>),
+}
+
+impl From<udp::UdpResponse> for Response {
+    fn from(value: udp::UdpResponse) -> Self {
+        Self::UdpUnparsable(value.0.into())
+    }
+}
+
+impl<'a> From<ntp_proto::NtpPacket<'a>> for Response {
+    fn from(value: ntp_proto::NtpPacket<'a>) -> Self {
+        Self::UdpResponse(value.into_owned())
+    }
+}
+
+impl From<nts_ke::Response> for Response {
+    fn from(value: nts_ke::Response) -> Self {
+        Self::KeResponse(value)
+    }
+}
+
+impl From<Vec<NtsRecord>> for Response {
+    fn from(value: Vec<NtsRecord>) -> Self {
+        Self::KeInvalid(value)
     }
 }
 
 pub trait TestCase {
     fn name(&self) -> &'static str;
-    fn run(&self, conn: &mut Connection) -> anyhow::Result<TestResult>;
-}
-
-impl<F> TestCase for F
-where
-    F: Fn(&mut Connection) -> anyhow::Result<TestResult>,
-{
-    fn name(&self) -> &'static str {
-        std::any::type_name::<Self>()
-    }
-
-    fn run(&self, conn: &mut Connection) -> anyhow::Result<TestResult> {
-        self(conn)
-    }
-}
-
-pub enum TestResult {
-    Pass,
-    Fail(String, Option<Response>),
-}
-
-const PASS: anyhow::Result<TestResult> = Ok(TestResult::Pass);
-
-fn fail(msg: impl ToString, response: Response) -> anyhow::Result<TestResult> {
-    Ok(TestResult::Fail(msg.to_string(), Some(response)))
-}
-
-fn fail_no_response() -> anyhow::Result<TestResult> {
-    Ok(TestResult::Fail("Server did not respond".to_string(), None))
+    fn run(&self, conn: &TestConfig) -> TestResult;
 }

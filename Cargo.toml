@@ -7,10 +7,17 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+ntp-proto = { version = "1.1.0-alpha.20231123", features = ["__internal-api", "__internal-test", "ntpv5"] }
+
 anyhow = "1.0.75"
 clap = { version = "4.4.10", features = ["derive"] }
 hex = "0.4.3"
-ntp-proto = { version = "1.1.0-alpha.20231123", features = ["__internal-api", "__internal-test", "ntpv5"] }
+humantime = "2.1.0"
+
+rustls = "0.22.0"
+rustls-pemfile = "2.0.0"
+rustls-pki-types = "1.0.1"
+webpki-roots = "0.26.0"
 
 [patch.crates-io]
 ntp-proto = { git = "https://github.com/pendulum-project/ntpd-rs", branch = "pester" }
