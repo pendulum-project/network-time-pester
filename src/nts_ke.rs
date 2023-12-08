@@ -1,3 +1,4 @@
+use crate::nts::NtsCookie;
 use crate::util::result::{fail, TestError, TestResult};
 use crate::{RawBytes, TestCase, TestConfig};
 use anyhow::{anyhow, Context};
@@ -5,10 +6,10 @@ use ntp_proto::{NtsRecord, NtsRecordDecoder};
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use rustls_pki_types::ServerName;
 use std::error::Error;
-use std::fmt::{Debug, Display, Formatter};
+use std::fmt::{format, Debug, Display, Formatter};
 use std::io;
 use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -44,6 +45,8 @@ impl Error for RecvError {
 
 pub struct NtsKeConnection {
     stream: StreamOwned<ClientConnection, TcpStream>,
+    host: String,
+    port: u16,
     record_decoder: NtsRecordDecoder,
 }
 
@@ -51,7 +54,7 @@ impl NtsKeConnection {
     pub fn new(
         host: &str,
         port: u16,
-        root_cert_store: Arc<RootCertStore>,
+        root_cert_store: &Arc<RootCertStore>,
         timeout: Duration,
     ) -> TestResult<Self> {
         let addr = (host, port)
@@ -61,7 +64,7 @@ impl NtsKeConnection {
             .context(format!("Host has no IP entries: {host:?}"))?;
 
         let mut config = ClientConfig::builder()
-            .with_root_certificates(root_cert_store)
+            .with_root_certificates(Arc::clone(root_cert_store))
             .with_no_client_auth();
 
         // Ensure we send only ntske/1 as alpn
@@ -85,6 +88,8 @@ impl NtsKeConnection {
 
         Ok(Self {
             stream,
+            host: host.to_string(),
+            port,
             record_decoder: Default::default(),
         })
     }
@@ -137,6 +142,21 @@ impl NtsKeConnection {
 
         let response = Response::try_from(records)?;
         Ok(response)
+    }
+
+    pub fn do_request(&mut self) -> TestResult<(Vec<NtsCookie>, SocketAddr)> {
+        let response = self.exchange(NtsRecord::client_key_exchange_records())?;
+
+        let host = response.server.as_deref().unwrap_or(&self.host);
+        let port = response.port.unwrap_or(123);
+
+        let udp_host = format!("{host}:{port}")
+            .to_socket_addrs()
+            .with_context(|| format!("Could not resolve {host}:{port}"))?
+            .next()
+            .with_context(|| format!("{host:?} did not resolve into any IPs"))?;
+
+        Ok((response.cookies, udp_host))
     }
 }
 
@@ -227,7 +247,7 @@ pub struct Response {
     pub errors: Vec<u16>,
     pub warnings: Vec<u16>,
     pub aead: Option<Vec<u16>>,
-    pub cookies: Vec<RawBytes>,
+    pub cookies: Vec<NtsCookie>,
     pub server: Option<String>,
     pub port: Option<u16>,
 }
@@ -276,7 +296,7 @@ impl TryFrom<Vec<NtsRecord>> for Response {
                         );
                     }
                 }
-                NtsRecord::NewCookie { cookie_data } => cookies.push(cookie_data.into()),
+                NtsRecord::NewCookie { cookie_data } => cookies.push(NtsCookie(cookie_data.into())),
                 NtsRecord::Server { critical: _, name } => {
                     if server.replace(name).is_some() {
                         return fail(

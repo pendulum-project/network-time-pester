@@ -1,3 +1,4 @@
+use crate::nts::NtsCookie;
 use crate::util::result::{fail, fail_no_response, TestResult, PASS};
 use crate::{Response, TestCase, TestConfig, TestError};
 use anyhow::Context;
@@ -130,23 +131,28 @@ where
             let mut conn = conf.udp()?;
             (self.f)(&mut conn)?;
 
-            // Check that we did not kill the server
-            let (req, id) = NtpPacket::poll_message(PollInterval::default());
-            match conn.pester(req) {
-                Ok(Some(response)) if response.valid_server_response(id, false) => PASS,
-                Ok(Some(response)) => fail(
-                    "After test: Poll was answered by invalid response",
-                    response,
-                ),
-                Ok(None) => {
-                    fail_no_response("After test: Server did no longer reply to normal poll")
-                }
-                Err(e) => fail_no_response(format!(
-                    "After test: Server did no longer reply to normal poll. Error: {e:?}"
-                )),
-            }
+            udp_server_still_alive(&mut conn, None)
         }
     }
 
     Box::new(UdpTest { f })
+}
+
+pub fn udp_server_still_alive(conn: &mut UdpConnection, cookie: Option<NtsCookie>) -> TestResult {
+    // Check that we did not kill the server
+    let (req, id) = match cookie {
+        None => NtpPacket::poll_message(PollInterval::default()),
+        Some(ref cookie) => NtpPacket::nts_poll_message(cookie, 1, PollInterval::default()),
+    };
+    match conn.pester(req) {
+        Ok(Some(response)) if response.valid_server_response(id, cookie.is_some()) => PASS,
+        Ok(Some(response)) => fail(
+            "After test: Poll was answered by invalid response",
+            response,
+        ),
+        Ok(None) => fail_no_response("After test: Server did no longer reply to normal poll"),
+        Err(e) => fail_no_response(format!(
+            "After test: Server did no longer reply to normal poll. Error: {e:?}"
+        )),
+    }
 }

@@ -5,11 +5,13 @@ pub mod tests;
 #[cfg(not(doc))]
 mod tests;
 
+pub mod nts;
 pub mod nts_ke;
 pub mod udp;
 pub mod util;
 
 use crate::nts_ke::NtsKeConnection;
+use anyhow::{anyhow, Context};
 use ntp_proto::NtsRecord;
 use rustls::RootCertStore;
 use std::fmt::{Debug, Formatter};
@@ -17,34 +19,118 @@ use std::fs::File;
 use std::io::BufReader;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::nts::NtsCookie;
 pub use tests::all_tests;
 pub use util::result::{TestError, TestResult};
 
+#[derive(Debug)]
+pub struct NtsServer {
+    host: String,
+    port: u16,
+    root_cert_store: Arc<RootCertStore>,
+    udp_host: SocketAddr,
+    cookies: Mutex<Vec<NtsCookie>>,
+    timeout: Duration,
+}
+
+impl NtsServer {
+    pub fn new(
+        host: String,
+        port: u16,
+        ca_file: Option<PathBuf>,
+        timeout: Duration,
+    ) -> TestResult<Self> {
+        let root_cert_store = root_ca(ca_file)?;
+
+        let mut ke = NtsKeConnection::new(&host, port, &root_cert_store, timeout)?;
+        let (cookies, udp_host) = ke.do_request()?;
+
+        Ok(Self {
+            host,
+            port,
+            root_cert_store,
+            udp_host,
+            cookies: Mutex::new(cookies),
+            timeout,
+        })
+    }
+
+    pub fn udp_host(&self) -> SocketAddr {
+        self.udp_host
+    }
+
+    pub fn take_cookie(&self) -> TestResult<NtsCookie> {
+        let mut cookies = self.cookies.lock().expect("No poisoned cookies");
+
+        if cookies.is_empty() {
+            self.refill(&mut cookies)?;
+        }
+
+        Ok(cookies.pop().expect("Just refilled the jar"))
+    }
+
+    fn refill(&self, cookies: &mut Vec<NtsCookie>) -> TestResult {
+        assert!(cookies.is_empty());
+
+        let mut ke =
+            NtsKeConnection::new(&self.host, self.port, &self.root_cert_store, self.timeout)?;
+        let (new_cookies, udp_host) = ke.do_request()?;
+
+        if udp_host != self.udp_host {
+            return Err(TestError::Error(anyhow!(
+                "Server switched to which UDP host it points"
+            )));
+        }
+
+        cookies.extend(new_cookies);
+
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub enum Server {
+    Ntp(SocketAddr),
+    Nts(NtsServer),
+}
+
+#[derive(Debug)]
 pub struct TestConfig {
-    pub udp: Option<SocketAddr>,
-    pub ke: Option<(String, u16)>,
-    pub root_cert_store: Arc<RootCertStore>,
+    pub server: Server,
     pub timeout: Duration,
 }
 
 impl TestConfig {
     pub fn udp(&self) -> TestResult<udp::UdpConnection> {
-        match self.udp {
-            Some(addr) => udp::UdpConnection::new(addr, self.timeout),
-            None => Err(TestError::Skipped),
-        }
+        let addr = match &self.server {
+            Server::Ntp(addr) => *addr,
+            Server::Nts(server) => server.udp_host(),
+        };
+
+        udp::UdpConnection::new(addr, self.timeout)
     }
 
     pub fn ke(&self) -> TestResult<NtsKeConnection> {
-        match self.ke {
-            Some((ref host, port)) => {
-                NtsKeConnection::new(host, port, Arc::clone(&self.root_cert_store), self.timeout)
-            }
-            None => Err(TestError::Skipped),
+        match &self.server {
+            Server::Ntp(_) => Err(TestError::Skipped),
+            Server::Nts(server) => NtsKeConnection::new(
+                &server.host,
+                server.port,
+                &server.root_cert_store,
+                server.timeout,
+            ),
         }
+    }
+
+    pub fn take_cookie_pair(&self) -> TestResult<[NtsCookie; 2]> {
+        let Server::Nts(server) = &self.server else {
+            return Err(TestError::Skipped);
+        };
+
+        Ok([server.take_cookie()?, server.take_cookie()?])
     }
 }
 

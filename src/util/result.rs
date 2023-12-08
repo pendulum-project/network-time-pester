@@ -1,4 +1,6 @@
 use crate::Response;
+use std::error::Error;
+use std::fmt::{write, Display, Formatter};
 
 pub type TestResult<T = ()> = Result<T, TestError>;
 
@@ -12,6 +14,31 @@ pub enum TestError {
 impl From<anyhow::Error> for TestError {
     fn from(value: anyhow::Error) -> Self {
         Self::Error(value)
+    }
+}
+
+impl Display for TestError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TestError::Fail(msg, _) => {
+                write!(f, "Test case failed: {msg}")
+            }
+            TestError::Skipped => {
+                write!(f, "Test was skipped")
+            }
+            TestError::Error(e) => {
+                write!(f, "A different error occurred: {e}")
+            }
+        }
+    }
+}
+
+impl Error for TestError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            TestError::Error(e) => Some(e.as_ref()),
+            TestError::Fail(_, _) | TestError::Skipped => None,
+        }
     }
 }
 

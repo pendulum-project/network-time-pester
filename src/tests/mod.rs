@@ -4,6 +4,7 @@ use crate::TestCase;
 
 pub mod basic;
 pub mod extensions;
+pub mod nts;
 pub mod nts_ke;
 
 /// Generate a list of all currently implemented test cases

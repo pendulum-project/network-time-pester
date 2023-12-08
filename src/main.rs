@@ -1,22 +1,28 @@
-use std::net::SocketAddr;
+use anyhow::Context;
+use std::fmt::format;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 
 use clap::Parser;
 use network_time_pester as pest;
-use network_time_pester::root_ca;
+use network_time_pester::{root_ca, NtsServer, Server};
 use pest::{TestConfig, TestError};
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 struct Cli {
-    server: Option<SocketAddr>,
+    #[arg(default_value = "localhost")]
+    host: String,
 
-    #[arg(long)]
-    nts_ke_server: Option<String>,
+    #[arg(long, short, default_value_t = 123)]
+    port: u16,
+
+    #[arg(long, short = 's')]
+    nts: bool,
 
     #[arg(long, default_value_t = 4460)]
-    nts_ke_port: u16,
+    ke_port: u16,
 
-    #[arg(long)]
+    #[arg(long, short, requires = "nts")]
     ca_file: Option<PathBuf>,
 
     #[arg(long, short, default_value = "100ms")]
@@ -26,13 +32,22 @@ struct Cli {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    let config = TestConfig {
-        udp: cli.server,
-        ke: cli
-            .nts_ke_server
-            .map(|hostname| (hostname, cli.nts_ke_port)),
-        root_cert_store: root_ca(cli.ca_file)?,
-        timeout: cli.timeout.into(),
+    let config = if cli.nts {
+        let server = NtsServer::new(cli.host, cli.ke_port, cli.ca_file, cli.timeout.into())?;
+        TestConfig {
+            server: Server::Nts(server),
+            timeout: cli.timeout.into(),
+        }
+    } else {
+        let server = format!("{}:{}", cli.host, cli.port)
+            .to_socket_addrs()
+            .with_context(|| format!("Failed to lookup host: {:?}", cli.host))?
+            .next()
+            .with_context(|| format!("Host {:?} did not resolve into an IPs", cli.host))?;
+        TestConfig {
+            server: Server::Ntp(server),
+            timeout: cli.timeout.into(),
+        }
     };
 
     let mut passed = 0;
