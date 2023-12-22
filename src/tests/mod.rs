@@ -58,8 +58,7 @@ pub fn test_responds_to_version_4(conn: &mut Connection) -> anyhow::Result<TestR
 /// Since NTPv5 is not released yet any compliant server should still ignore
 /// packets with this version number.
 pub fn test_ignores_version_5(conn: &mut Connection) -> anyhow::Result<TestResult> {
-    let (packet, _id) = NtpPacket::poll_message_v5(Default::default());
-    let response = conn.pester(packet)?;
+    let response = conn.pester(b"\x2B\x02\x06\xe9\x00\x00\x02\x36\x00\x00\x03\xb7\xc0\x35\x67\x6c\xe5\xf6\x61\xfd\x6f\x16\x5f\x03\xe5\xf6\x63\xa8\x76\x19\xef\x40\xe5\xf6\x63\xa8\x79\x8c\x65\x81\xe5\xf6\x63\xa8\x79\x8e\xae\x2b")?;
 
     pester_assert_no_response!(response, "Should not respond to ntp version 5 requests");
 
