@@ -1,6 +1,6 @@
-use crate::{fail, fail_no_response, Connection, TestCase, TestResult, PASS};
+use crate::{fail, Connection, TestCase, TestResult, PASS};
 use anyhow::bail;
-use ntp_proto::{ExtensionField, NtpAssociationMode, NtpHeader, NtpPacket};
+use ntp_proto::{ExtensionField, NtpAssociationMode, NtpPacket};
 use std::array;
 use std::borrow::Cow;
 
@@ -21,53 +21,34 @@ pub fn test_responds_to_version_4(conn: &mut Connection) -> anyhow::Result<TestR
     let (request, id) = NtpPacket::poll_message(Default::default());
     let response = conn.pester(request)?;
 
-    let Some(response) = response else {
-        return fail_no_response();
-    };
+    let response = pester_assert_response!(response);
+    let packet = pester_assert_parsable!(response);
+    let header = pester_assert_version!(response, packet, V4);
 
-    let packet = match NtpPacket::try_from(&response) {
-        Ok(packet) => packet,
-        Err(e) => return fail(format!("Could not parse response: {e}"), response),
-    };
+    pester_assert_eq!(
+        response,
+        header.origin_timestamp,
+        id.expected_origin_timestamp,
+        "Incorrect origin timestamp"
+    );
+    pester_assert!(
+        response,
+        packet.valid_server_response(id, false),
+        "Server response not matching original packet"
+    );
 
-    let NtpHeader::V4(header) = packet.header() else {
-        return fail(
-            format!(
-                "Server replied with version {} instead of 4",
-                packet.version()
-            ),
-            response,
-        );
-    };
-
-    if header.origin_timestamp != id.expected_origin_timestamp {
-        return fail(
-            format!(
-                "Server replied with incorrect origin timestamp. Should have been {:?}, was {:?}",
-                id.expected_origin_timestamp, header.origin_timestamp
-            ),
-            response,
-        );
-    }
-    assert!(packet.valid_server_response(id, false));
-
-    if header.receive_timestamp > header.transmit_timestamp {
-        return fail(
-            "Server claims to have received the packet after sending the reply",
-            response,
-        );
-    }
-
-    if header.mode != NtpAssociationMode::Server {
-        return fail(
-            format!(
-                "Server replied with incorrect mode: {:?} should have been {:?}",
-                header.mode,
-                NtpAssociationMode::Server
-            ),
-            response,
-        );
-    }
+    pester_assert_gt!(
+        response,
+        header.transmit_timestamp,
+        header.receive_timestamp,
+        "Receive should happen before send of response"
+    );
+    pester_assert_eq!(
+        response,
+        header.mode,
+        NtpAssociationMode::Server,
+        "Incorrect mode in server response"
+    );
 
     PASS
 }
@@ -80,13 +61,9 @@ pub fn test_ignores_version_5(conn: &mut Connection) -> anyhow::Result<TestResul
     let (packet, _id) = NtpPacket::poll_message_v5(Default::default());
     let response = conn.pester(packet)?;
 
-    match response {
-        None => PASS,
-        Some(r) => fail(
-            "Server did respond to NTPv5 request, should have ignored",
-            r,
-        ),
-    }
+    pester_assert_no_response!(response, "Should not respond to ntp version 5 requests");
+
+    PASS
 }
 
 /// Test if a server ignores invalid extensions
@@ -99,18 +76,14 @@ pub fn test_unknown_extensions_are_ignored(conn: &mut Connection) -> anyhow::Res
         data: Cow::Borrowed(&[]),
     });
 
-    let Some(response) = conn.pester(request)? else {
-        return fail_no_response();
-    };
+    let response = pester_assert_response!(conn.pester(request)?);
+    let packet = pester_assert_parsable!(response);
 
-    let packet = match NtpPacket::try_from(&response) {
-        Ok(packet) => packet,
-        Err(e) => return fail(format!("Could not parse response: {e}"), response),
-    };
-
-    if !packet.valid_server_response(id, false) {
-        return fail("Server replied with wrong id", response);
-    }
+    pester_assert!(
+        response,
+        packet.valid_server_response(id, false),
+        "Server response not matching original packet"
+    );
 
     if packet.authenticated_extension_fields().next().is_some() {
         bail!("Parsed an authenticated extension from a non NTS packet, this is a bug!");
@@ -134,44 +107,39 @@ pub fn test_unique_id_is_returned(conn: &mut Connection) -> anyhow::Result<TestR
     ));
     request.push_additional(uid.clone());
 
-    let Some(response) = conn.pester(request)? else {
-        return fail_no_response();
-    };
+    let response = pester_assert_response!(conn.pester(request)?);
+    let packet = pester_assert_parsable!(response);
 
-    let packet = match NtpPacket::try_from(&response) {
-        Ok(packet) => packet,
-        Err(e) => return fail(format!("Could not parse response: {e}"), response),
-    };
-
-    if !packet.valid_server_response(id, false) {
-        return fail("Server replied with wrong id", response);
-    }
+    pester_assert!(
+        response,
+        packet.valid_server_response(id, false),
+        "Server response not matching original packet"
+    );
 
     if packet.authenticated_extension_fields().next().is_some() {
         bail!("Parsed an authenticated extension from a non NTS packet, this is a bug!");
     }
 
     let fields: Vec<_> = packet.untrusted_extension_fields().collect();
-    if fields.is_empty() {
-        return fail(
-            "Server did not send a unique id extension field in its reply.",
-            response,
-        );
-    }
+    pester_assert!(
+        response,
+        !fields.is_empty(),
+        "Server dit not reply with unique id EF"
+    );
+    pester_assert_lt!(
+        response,
+        fields.len(),
+        2,
+        "Too many extension fields provided by server (Fields: {:?})",
+        fields
+    );
 
-    if fields.len() >= 2 {
-        return fail(
-            format!("Server returned more then one extension fields. (Fields: {fields:?})"),
-            response,
-        );
-    }
-
-    if fields[0] != &uid {
-        return fail(
-            "The unique id of the response does not match the one in the request!",
-            response,
-        );
-    }
+    pester_assert_eq!(
+        response,
+        fields[0],
+        &uid,
+        "Response UID does not match request"
+    );
 
     PASS
 }
