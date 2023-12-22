@@ -187,14 +187,14 @@ impl From<&[u8]> for Request {
     }
 }
 
-impl<const N: usize> From<[u8;N]> for Request {
-    fn from(value: [u8;N]) -> Self {
+impl<const N: usize> From<[u8; N]> for Request {
+    fn from(value: [u8; N]) -> Self {
         Self(value.into())
     }
 }
 
-impl<const N: usize> From<&[u8;N]> for Request {
-    fn from(value: &[u8;N]) -> Self {
+impl<const N: usize> From<&[u8; N]> for Request {
+    fn from(value: &[u8; N]) -> Self {
         Self(value.into())
     }
 }
