@@ -11,6 +11,8 @@ pub fn all_tests() -> Vec<Box<dyn TestCase>> {
         Box::new(test_ignores_version_5),
         Box::new(test_unknown_extensions_are_ignored),
         Box::new(test_unique_id_is_returned),
+        Box::new(test_odd_sized_packets),
+        Box::new(test_invalid_extension_fields),
     ]
 }
 
@@ -141,6 +143,48 @@ pub fn test_unique_id_is_returned(conn: &mut Connection) -> anyhow::Result<TestR
         &uid,
         "Response UID does not match request"
     );
+
+    PASS
+}
+
+fn test_odd_sized_packets(conn: &mut Connection) -> anyhow::Result<TestResult> {
+    let base = b"\x23\x02\x06\xe8\x00\x00\x03\xff\x00\x00\x03\x7d\x5e\xc6\x9f\x0f\xe5\xf6\x62\x98\x7b\x61\xb9\xaf\xe5\xf6\x63\x66\x7b\x64\x99\x5d\xe5\xf6\x63\x66\x81\x40\x55\x90\xe5\xf6\x63\xa8\x76\x1d\xde\x48\x01\x02\x03\x04\x05";
+
+    for i in 0..=base.len() {
+        let response = conn.pester(&base[..i])?;
+        if let Some(response) = response {
+            pester_assert_parsable!(response);
+        }
+        pester_assert_server_responsive!(conn);
+    }
+
+    PASS
+}
+
+fn test_invalid_extension_fields(conn: &mut Connection) -> anyhow::Result<TestResult> {
+    let response = conn.pester(b"\x23\x02\x06\xe8\x00\x00\x03\xff\x00\x00\x03\x7d\x5e\xc6\x9f\x0f\xe5\xf6\x62\x98\x7b\x61\xb9\xaf\xe5\xf6\x63\x66\x7b\x64\x99\x5d\xe5\xf6\x63\x66\x81\x40\x55\x90\xe5\xf6\x63\xa8\x76\x1d\xde\x48\xab\xcd\xf0\xf05678901234567890123456789012")?;
+    if let Some(response) = response {
+        pester_assert_parsable!(response);
+    }
+    pester_assert_server_responsive!(conn);
+
+    let response = conn.pester(b"\x23\x02\x06\xe8\x00\x00\x03\xff\x00\x00\x03\x7d\x5e\xc6\x9f\x0f\xe5\xf6\x62\x98\x7b\x61\xb9\xaf\xe5\xf6\x63\x66\x7b\x64\x99\x5d\xe5\xf6\x63\x66\x81\x40\x55\x90\xe5\xf6\x63\xa8\x76\x1d\xde\x48\xab\xcd\x00\x055678901234567890123456789012")?;
+    if let Some(response) = response {
+        pester_assert_parsable!(response);
+    }
+    pester_assert_server_responsive!(conn);
+
+    let response = conn.pester(b"\x23\x02\x06\xe8\x00\x00\x03\xff\x00\x00\x03\x7d\x5e\xc6\x9f\x0f\xe5\xf6\x62\x98\x7b\x61\xb9\xaf\xe5\xf6\x63\x66\x7b\x64\x99\x5d\xe5\xf6\x63\x66\x81\x40\x55\x90\xe5\xf6\x63\xa8\x76\x1d\xde\x48\xab\xcd\x00\x065678901234567890123456789012")?;
+    if let Some(response) = response {
+        pester_assert_parsable!(response);
+    }
+    pester_assert_server_responsive!(conn);
+
+    let response = conn.pester(b"\x23\x02\x06\xe8\x00\x00\x03\xff\x00\x00\x03\x7d\x5e\xc6\x9f\x0f\xe5\xf6\x62\x98\x7b\x61\xb9\xaf\xe5\xf6\x63\x66\x7b\x64\x99\x5d\xe5\xf6\x63\x66\x81\x40\x55\x90\xe5\xf6\x63\xa8\x76\x1d\xde\x48\xab\xcd\x00\x075678901234567890123456789012")?;
+    if let Some(response) = response {
+        pester_assert_parsable!(response);
+    }
+    pester_assert_server_responsive!(conn);
 
     PASS
 }
