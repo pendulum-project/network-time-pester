@@ -181,6 +181,24 @@ impl From<NtpPacket<'_>> for Request {
     }
 }
 
+impl From<&[u8]> for Request {
+    fn from(value: &[u8]) -> Self {
+        Self(value.into())
+    }
+}
+
+impl<const N: usize> From<[u8;N]> for Request {
+    fn from(value: [u8;N]) -> Self {
+        Self(value.into())
+    }
+}
+
+impl<const N: usize> From<&[u8;N]> for Request {
+    fn from(value: &[u8;N]) -> Self {
+        Self(value.into())
+    }
+}
+
 #[derive(Clone)]
 pub struct Response(pub Vec<u8>);
 
