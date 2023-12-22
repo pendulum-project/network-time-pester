@@ -63,6 +63,8 @@ pub fn test_ignores_version_5(conn: &mut Connection) -> anyhow::Result<TestResul
 
     pester_assert_no_response!(response, "Should not respond to ntp version 5 requests");
 
+    pester_assert_server_responsive!(conn);
+
     PASS
 }
 

@@ -138,6 +138,17 @@ macro_rules! pester_assert_version {
     };
 }
 
+macro_rules! pester_assert_server_responsive {
+    ($conn:expr $(,)?) => {
+        if !$conn
+            .pester(ntp_proto::NtpPacket::poll_message(core::default::Default::default()).0)?
+            .is_some()
+        {
+            return crate::fail_no_response();
+        }
+    };
+}
+
 // This allows us to generate nice docs around our tests while we still get
 // warnings for unused test cases
 #[cfg(doc)]
