@@ -1,15 +1,16 @@
 use crate::nts::NtsCookie;
 use crate::util::result::{fail, TestError, TestResult};
-use crate::{RawBytes, TestCase, TestConfig};
+use crate::{TestCase, TestConfig};
 use anyhow::{anyhow, Context};
-use ntp_proto::{NtsRecord, NtsRecordDecoder};
+use ntp_proto::{AeadAlgorithm, NtsKeys, NtsRecord, NtsRecordDecoder, ProtocolId};
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use rustls_pki_types::ServerName;
 use std::error::Error;
-use std::fmt::{format, Debug, Display, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use std::io;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::panic::UnwindSafe;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -144,8 +145,22 @@ impl NtsKeConnection {
         Ok(response)
     }
 
-    pub fn do_request(&mut self) -> TestResult<(Vec<NtsCookie>, SocketAddr)> {
-        let response = self.exchange(NtsRecord::client_key_exchange_records())?;
+    pub fn do_request(&mut self) -> TestResult<(Vec<NtsCookie>, SocketAddr, NtsKeys)> {
+        let response =
+            self.exchange(NtsRecord::client_key_exchange_records(std::iter::empty()).into_vec())?;
+
+        let Some(&[aead]) = response.aead.as_deref() else {
+            return fail("KE did not reply with exactly one AEAD", response);
+        };
+        let aead = AeadAlgorithm::try_deserialize(aead).context("invalid AEAD")?;
+
+        let Some(&[next_protocol]) = response.next_protocol.as_deref() else {
+            return fail("KE did not reply with exactly one next_protocol", response);
+        };
+        let next_protocol =
+            ProtocolId::try_deserialize(next_protocol).context("invalid next protocol")?;
+
+        let keys = todo!();
 
         let host = response.server.as_deref().unwrap_or(&self.host);
         let port = response.port.unwrap_or(123);
@@ -156,13 +171,13 @@ impl NtsKeConnection {
             .next()
             .with_context(|| format!("{host:?} did not resolve into any IPs"))?;
 
-        Ok((response.cookies, udp_host))
+        Ok((response.cookies, udp_host, keys))
     }
 }
 
-pub fn ke_test<F>(f: F) -> Box<dyn TestCase>
+pub fn ke_test<F>(f: F) -> Box<dyn TestCase + UnwindSafe>
 where
-    F: Fn(&mut NtsKeConnection) -> TestResult + 'static,
+    F: Fn(&mut NtsKeConnection) -> TestResult + UnwindSafe + 'static,
 {
     struct KeTest<F> {
         f: F,

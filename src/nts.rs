@@ -1,11 +1,7 @@
-use crate::nts_ke::NtsKeConnection;
 use crate::udp::{udp_server_still_alive, UdpConnection};
-use crate::util::result::{fail, fail_no_response, PASS};
-use crate::{NtsServer, RawBytes, TestCase, TestConfig, TestResult};
-use anyhow::Context;
-use ntp_proto::{NtpPacket, PollInterval};
-use std::net::{SocketAddr, ToSocketAddrs};
+use crate::{RawBytes, TestCase, TestConfig, TestResult};
 use std::ops::Deref;
+use std::panic::UnwindSafe;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct NtsCookie(pub RawBytes);
@@ -18,9 +14,9 @@ impl Deref for NtsCookie {
     }
 }
 
-pub fn nts_test<F>(f: F) -> Box<dyn TestCase>
+pub fn nts_test<F>(f: F) -> Box<dyn TestCase + UnwindSafe>
 where
-    F: Fn(&mut UdpConnection, NtsCookie) -> TestResult + 'static,
+    F: Fn(&mut UdpConnection, NtsCookie) -> TestResult + UnwindSafe + 'static,
 {
     struct KeTest<F> {
         f: F,

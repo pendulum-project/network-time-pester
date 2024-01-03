@@ -12,7 +12,7 @@ pub mod util;
 
 use crate::nts_ke::NtsKeConnection;
 use anyhow::{anyhow, Context};
-use ntp_proto::NtsRecord;
+use ntp_proto::{NtsKeys, NtsRecord};
 use rustls::RootCertStore;
 use std::fmt::{Debug, Formatter};
 use std::fs::File;
@@ -32,7 +32,7 @@ pub struct NtsServer {
     port: u16,
     root_cert_store: Arc<RootCertStore>,
     udp_host: SocketAddr,
-    cookies: Mutex<Vec<NtsCookie>>,
+    cookies: Mutex<(Vec<NtsCookie>, NtsKeys)>,
     timeout: Duration,
 }
 
@@ -46,14 +46,14 @@ impl NtsServer {
         let root_cert_store = root_ca(ca_file)?;
 
         let mut ke = NtsKeConnection::new(&host, port, &root_cert_store, timeout)?;
-        let (cookies, udp_host) = ke.do_request()?;
+        let (cookies, udp_host, keys) = ke.do_request()?;
 
         Ok(Self {
             host,
             port,
             root_cert_store,
             udp_host,
-            cookies: Mutex::new(cookies),
+            cookies: Mutex::new((cookies, keys)),
             timeout,
         })
     }
@@ -65,19 +65,19 @@ impl NtsServer {
     pub fn take_cookie(&self) -> TestResult<NtsCookie> {
         let mut cookies = self.cookies.lock().expect("No poisoned cookies");
 
-        if cookies.is_empty() {
+        if cookies.0.is_empty() {
             self.refill(&mut cookies)?;
         }
 
-        Ok(cookies.pop().expect("Just refilled the jar"))
+        Ok(cookies.0.pop().expect("Just refilled the jar"))
     }
 
-    fn refill(&self, cookies: &mut Vec<NtsCookie>) -> TestResult {
+    fn refill(&self, (cookies, keys): &mut (Vec<NtsCookie>, NtsKeys)) -> TestResult {
         assert!(cookies.is_empty());
 
         let mut ke =
             NtsKeConnection::new(&self.host, self.port, &self.root_cert_store, self.timeout)?;
-        let (new_cookies, udp_host) = ke.do_request()?;
+        let (new_cookies, udp_host, new_keys) = ke.do_request()?;
 
         if udp_host != self.udp_host {
             return Err(TestError::Error(anyhow!(
@@ -86,6 +86,7 @@ impl NtsServer {
         }
 
         cookies.extend(new_cookies);
+        *keys = new_keys;
 
         Ok(())
     }

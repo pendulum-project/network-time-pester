@@ -6,6 +6,7 @@ use ntp_proto::{NoCipher, NtpPacket, PacketParsingError, PollInterval};
 use std::fmt::{Debug, Formatter};
 use std::io::{Cursor, ErrorKind};
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
+use std::panic::UnwindSafe;
 use std::time::Duration;
 
 pub struct UdpConnection {
@@ -111,9 +112,9 @@ impl UdpConnection {
     }
 }
 
-pub fn udp_test<F>(f: F) -> Box<dyn TestCase>
+pub fn udp_test<F>(f: F) -> Box<dyn TestCase + UnwindSafe>
 where
-    F: Fn(&mut UdpConnection) -> TestResult + 'static,
+    F: Fn(&mut UdpConnection) -> TestResult + UnwindSafe + 'static,
 {
     struct UdpTest<F> {
         f: F,

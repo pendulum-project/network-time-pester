@@ -55,8 +55,9 @@ fn main() -> anyhow::Result<()> {
     let mut skipped = 0;
     for test in pest::all_tests() {
         let name = test.name().trim_start_matches("network_time_pester::");
+        let config_ref = &config;
 
-        match test.run(&config) {
+        match pest::util::catch_unwind(move || test.run(config_ref)) {
             Ok(()) => {
                 passed += 1;
                 println!("✅ {name}");
