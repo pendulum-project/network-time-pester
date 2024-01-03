@@ -1,6 +1,6 @@
 use crate::Response;
 use std::error::Error;
-use std::fmt::{write, Display, Formatter};
+use std::fmt::{Display, Formatter};
 
 pub type TestResult<T = ()> = Result<T, TestError>;
 

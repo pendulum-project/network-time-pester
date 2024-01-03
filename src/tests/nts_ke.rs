@@ -102,7 +102,7 @@ pub fn ignore_unknown_extra_aead(ke: &mut NtsKeConnection) -> TestResult {
 pub fn empty_message_resolves_in_error(ke: &mut NtsKeConnection) -> TestResult {
     let response = ke.exchange([NtsRecord::EndOfMessage])?;
 
-    if &response.errors != &[1] {
+    if response.errors != [1] {
         return fail(
             "Server did not respond with error to empty message",
             response,

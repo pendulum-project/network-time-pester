@@ -1,11 +1,10 @@
 use anyhow::Context;
-use std::fmt::format;
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::ToSocketAddrs;
 use std::path::PathBuf;
 
 use clap::Parser;
 use network_time_pester as pest;
-use network_time_pester::{root_ca, NtsServer, Server};
+use network_time_pester::{NtsServer, Server};
 use pest::{TestConfig, TestError};
 
 #[derive(Parser, Debug)]

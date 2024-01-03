@@ -11,7 +11,7 @@ pub mod udp;
 pub mod util;
 
 use crate::nts_ke::NtsKeConnection;
-use anyhow::{anyhow, Context};
+use anyhow::anyhow;
 use ntp_proto::{NtsKeys, NtsRecord};
 use rustls::RootCertStore;
 use std::fmt::{Debug, Formatter};
