@@ -15,7 +15,7 @@ struct Cli {
     #[arg(long, short, default_value_t = 123)]
     port: u16,
 
-    #[arg(long, short = 's')]
+    #[arg(long, short = 's', conflicts_with = "port")]
     nts: bool,
 
     #[arg(long, default_value_t = 4460)]
