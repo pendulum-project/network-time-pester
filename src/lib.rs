@@ -5,6 +5,7 @@ pub mod tests;
 #[cfg(not(doc))]
 mod tests;
 
+pub(crate) mod macros;
 pub mod nts;
 pub mod nts_ke;
 pub mod udp;

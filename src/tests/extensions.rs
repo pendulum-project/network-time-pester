@@ -1,9 +1,10 @@
+use crate::macros::*;
 use crate::udp::UdpConnection;
-use crate::util::result::{expected_response, fail, TestResult, PASS};
+use crate::util::result::{fail, TestResult, PASS};
 use anyhow::anyhow;
 use ntp_proto::{ExtensionField, NtpPacket};
-use std::array;
 use std::borrow::Cow;
+use std::{array, format};
 
 /// Test if a server ignores invalid extensions
 ///
@@ -15,20 +16,22 @@ pub fn test_unknown_extensions_are_ignored(conn: &mut UdpConnection) -> TestResu
         data: Cow::Borrowed(&[]),
     });
 
-    let response = conn.pester(request)?.ok_or_else(expected_response)?;
+    let packet = pester_assert_response!(conn.pester(request)?);
 
-    if !response.valid_server_response(id, false) {
-        return fail("Server replied with wrong id", response);
-    }
+    pester_assert!(
+        packet,
+        packet.valid_server_response(id, false),
+        "Server response not matching original packet"
+    );
 
-    if response.authenticated_extension_fields().next().is_some() {
+    if packet.authenticated_extension_fields().next().is_some() {
         Err(anyhow!(
             "Parsed an authenticated extension from a non NTS packet, this is a bug!"
         ))?;
     }
 
-    if let Some(ef) = response.untrusted_extension_fields().next() {
-        return fail(format!("Received an extension field in response to an invalid extension field. (EF: {ef:?})"), response.clone());
+    if let Some(ef) = packet.untrusted_extension_fields().next() {
+        return fail(format!("Received an extension field in response to an invalid extension field. (EF: {ef:?})"), packet.clone());
     }
 
     PASS
@@ -45,39 +48,40 @@ pub fn test_unique_id_is_returned(conn: &mut UdpConnection) -> TestResult {
     ));
     request.push_additional(uid.clone());
 
-    let response = conn.pester(request)?.ok_or_else(expected_response)?;
+    let packet = pester_assert_response!(conn.pester(request)?);
 
-    if !response.valid_server_response(id, false) {
-        return fail("Server replied with wrong id", response);
-    }
+    pester_assert!(
+        packet,
+        packet.valid_server_response(id, false),
+        "Server response not matching original packet"
+    );
 
-    if response.authenticated_extension_fields().next().is_some() {
+    if packet.authenticated_extension_fields().next().is_some() {
         Err(anyhow!(
             "Parsed an authenticated extension from a non NTS packet, this is a bug!"
         ))?;
     }
 
-    let fields: Vec<_> = response.untrusted_extension_fields().collect();
-    if fields.is_empty() {
-        return fail(
-            "Server did not send a unique id extension field in its reply.",
-            response,
-        );
-    }
+    let fields: Vec<_> = packet.untrusted_extension_fields().collect();
+    pester_assert!(
+        packet,
+        !fields.is_empty(),
+        "Server dit not reply with unique id EF"
+    );
+    pester_assert_lt!(
+        packet,
+        fields.len(),
+        2,
+        "Too many extension fields provided by server (Fields: {:?})",
+        fields
+    );
 
-    if fields.len() >= 2 {
-        return fail(
-            format!("Server returned more then one extension fields. (Fields: {fields:?})"),
-            response,
-        );
-    }
-
-    if fields[0] != &uid {
-        return fail(
-            "The unique id of the response does not match the one in the request!",
-            response,
-        );
-    }
+    pester_assert_eq!(
+        packet,
+        fields[0],
+        &uid,
+        "Response UID does not match request"
+    );
 
     PASS
 }
