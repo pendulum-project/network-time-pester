@@ -1,12 +1,13 @@
 use crate::nts::NtsCookie;
 use crate::util::result::{fail, fail_no_response, TestResult, PASS};
-use crate::{Response, TestCase, TestConfig, TestError};
+use crate::{TestCase, TestConfig};
 use anyhow::Context;
-use ntp_proto::{NoCipher, NtpPacket, PacketParsingError, PollInterval};
+use ntp_proto::{NoCipher, NtpPacket, NtsKeys, PacketParsingError, PollInterval};
 use std::fmt::{Debug, Formatter};
 use std::io::{Cursor, ErrorKind};
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::panic::UnwindSafe;
+use std::sync::Arc;
 use std::time::Duration;
 
 pub struct UdpConnection {
@@ -15,13 +16,13 @@ pub struct UdpConnection {
 
 pub struct UdpRequest(pub Vec<u8>);
 
-impl From<NtpPacket<'_>> for UdpRequest {
-    fn from(value: NtpPacket) -> Self {
+impl UdpRequest {
+    pub fn from_ntp_packet(packet: NtpPacket, keys: Option<&NtsKeys>) -> Self {
         let mut buffer = vec![0u8; UdpConnection::MAX_LEN];
         let mut cursor = Cursor::new(buffer.as_mut_slice());
 
-        value
-            .serialize(&mut cursor, &NoCipher, None)
+        packet
+            .serialize(&mut cursor, &keys.map(|k| k.c2s.as_ref()), None)
             .expect("Serializing into a vec can not fail");
 
         let length = cursor.position() as usize;
@@ -29,6 +30,12 @@ impl From<NtpPacket<'_>> for UdpRequest {
         buffer.truncate(length);
 
         Self(buffer)
+    }
+}
+
+impl From<NtpPacket<'_>> for UdpRequest {
+    fn from(value: NtpPacket) -> Self {
+        Self::from_ntp_packet(value, None)
     }
 }
 
@@ -83,9 +90,9 @@ impl UdpConnection {
         Ok(Self { socket })
     }
 
-    pub fn pester(&mut self, req: impl Into<UdpRequest>) -> TestResult<Option<NtpPacket>> {
+    pub fn pester_raw(&mut self, req: UdpRequest) -> TestResult<Option<UdpResponse>> {
         self.socket
-            .send(req.into().0.as_slice())
+            .send(req.0.as_slice())
             .context("Could not send request")?;
 
         let mut response = vec![0; Self::MAX_LEN];
@@ -98,17 +105,44 @@ impl UdpConnection {
         };
         response.truncate(len);
 
-        let packet = match NtpPacket::deserialize(response.as_slice(), &NoCipher) {
-            Ok((packet, _cookie)) => packet,
-            Err(e) => {
-                return Err(TestError::Fail(
-                    format!("Server replied with invalid packet: {e:?}"),
-                    Some(Box::new(Response::UdpUnparsable(response.clone().into()))),
-                ))
-            }
+        Ok(Some(UdpResponse(response)))
+    }
+
+    fn pester_pkt(
+        &mut self,
+        packet: NtpPacket,
+        keys: Option<&NtsKeys>,
+    ) -> TestResult<Option<NtpPacket>> {
+        let req = UdpRequest::from_ntp_packet(packet, keys);
+        let response = match self.pester_raw(req)? {
+            None => return Ok(None),
+            Some(r) => r,
         };
 
+        let packet =
+            match NtpPacket::deserialize(response.0.as_slice(), &keys.map(|k| k.s2c.as_ref())) {
+                Ok((packet, _cookie)) => packet,
+                Err(e) => {
+                    return fail(
+                        format!("Server replied with invalid packet: {e:?}"),
+                        response,
+                    )
+                }
+            };
+
         Ok(Some(packet.into_owned()))
+    }
+
+    pub fn pester(&mut self, packet: NtpPacket) -> TestResult<Option<NtpPacket>> {
+        self.pester_pkt(packet, None)
+    }
+
+    pub fn pester_nts(
+        &mut self,
+        packet: NtpPacket,
+        keys: &NtsKeys,
+    ) -> TestResult<Option<NtpPacket>> {
+        self.pester_pkt(packet, Some(keys))
     }
 }
 
@@ -139,14 +173,23 @@ where
     Box::new(UdpTest { f })
 }
 
-pub fn udp_server_still_alive(conn: &mut UdpConnection, cookie: Option<NtsCookie>) -> TestResult {
+pub fn udp_server_still_alive(
+    conn: &mut UdpConnection,
+    nts: Option<(NtsCookie, Arc<NtsKeys>)>,
+) -> TestResult {
     // Check that we did not kill the server
-    let (req, id) = match cookie {
+    let (req, id) = match &nts {
         None => NtpPacket::poll_message(PollInterval::default()),
-        Some(ref cookie) => NtpPacket::nts_poll_message(cookie, 1, PollInterval::default()),
+        Some((cookie, _)) => NtpPacket::nts_poll_message(cookie, 1, PollInterval::default()),
     };
-    match conn.pester(req) {
-        Ok(Some(response)) if response.valid_server_response(id, cookie.is_some()) => PASS,
+
+    let result = match &nts {
+        None => conn.pester(req),
+        Some((_, keys)) => conn.pester_nts(req, keys),
+    };
+
+    match result {
+        Ok(Some(response)) if response.valid_server_response(id, nts.is_some()) => PASS,
         Ok(Some(response)) => fail(
             "After test: Poll was answered by invalid response",
             response,

@@ -32,7 +32,8 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     let config = if cli.nts {
-        let server = NtsServer::new(cli.host, cli.ke_port, cli.ca_file, cli.timeout.into())?;
+        let server = NtsServer::new(cli.host, cli.ke_port, cli.ca_file, cli.timeout.into())
+            .context("Could not connect to NTS server to gather cookies and information")?;
         TestConfig {
             server: Server::Nts(server),
             timeout: cli.timeout.into(),
@@ -51,6 +52,7 @@ fn main() -> anyhow::Result<()> {
 
     let mut passed = 0;
     let mut failed = 0;
+    let mut errored = 0;
     let mut skipped = 0;
     for test in pest::all_tests() {
         let name = test.name().trim_start_matches("network_time_pester::");
@@ -73,11 +75,16 @@ fn main() -> anyhow::Result<()> {
                 skipped += 1;
                 println!("⏩ {name}")
             }
-            Err(TestError::Error(e)) => println!("❓ {name}:\n ↳ {e:#}"),
+            Err(TestError::Error(e)) => {
+                errored += 1;
+                println!("❓ {name}:\n ↳ {e:#}")
+            }
         }
     }
 
-    println!("\n✅ Passed: {passed}\n❌ Failed: {failed}\n⏩ Skipped: {skipped}");
+    println!(
+        "\n✅ Passed: {passed}\n❌ Failed: {failed}\n❓ Errored: {errored}\n⏩ Skipped: {skipped}"
+    );
 
     Ok(())
 }

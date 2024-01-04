@@ -2,7 +2,7 @@ use crate::nts::NtsCookie;
 use crate::util::result::{fail, TestError, TestResult};
 use crate::{TestCase, TestConfig};
 use anyhow::{anyhow, Context};
-use ntp_proto::{AeadAlgorithm, NtsKeys, NtsRecord, NtsRecordDecoder, ProtocolId};
+use ntp_proto::{AeadAlgorithm, AesSivCmac256, NtsKeys, NtsRecord, NtsRecordDecoder, ProtocolId};
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use rustls_pki_types::ServerName;
 use std::error::Error;
@@ -47,7 +47,6 @@ impl Error for RecvError {
 pub struct NtsKeConnection {
     stream: StreamOwned<ClientConnection, TcpStream>,
     host: String,
-    port: u16,
     record_decoder: NtsRecordDecoder,
 }
 
@@ -90,7 +89,6 @@ impl NtsKeConnection {
         Ok(Self {
             stream,
             host: host.to_string(),
-            port,
             record_decoder: Default::default(),
         })
     }
@@ -146,21 +144,44 @@ impl NtsKeConnection {
     }
 
     pub fn do_request(&mut self) -> TestResult<(Vec<NtsCookie>, SocketAddr, NtsKeys)> {
-        let response =
-            self.exchange(NtsRecord::client_key_exchange_records(std::iter::empty()).into_vec())?;
+        let response = self.exchange([
+            NtsRecord::NextProtocol {
+                protocol_ids: vec![ProtocolId::NtpV4 as u16],
+            },
+            NtsRecord::AeadAlgorithm {
+                critical: false,
+                algorithm_ids: vec![AeadAlgorithm::AeadAesSivCmac256 as u16],
+            },
+            NtsRecord::EndOfMessage,
+        ])?;
 
         let Some(&[aead]) = response.aead.as_deref() else {
             return fail("KE did not reply with exactly one AEAD", response);
         };
         let aead = AeadAlgorithm::try_deserialize(aead).context("invalid AEAD")?;
+        if aead != AeadAlgorithm::AeadAesSivCmac256 {
+            return fail("KE replied with an aead we did not ask for", response);
+        }
 
         let Some(&[next_protocol]) = response.next_protocol.as_deref() else {
             return fail("KE did not reply with exactly one next_protocol", response);
         };
         let next_protocol =
             ProtocolId::try_deserialize(next_protocol).context("invalid next protocol")?;
+        if next_protocol != ProtocolId::NtpV4 {
+            return fail("KE replied with an protocol we did not ask for", response);
+        }
 
-        let keys = todo!();
+        // TODO: Once ntp-proto updated rustls: Use AeadAlgorithm::extract_nts_keys directly
+        let c2s = extract_nts_key(&self.stream.conn, aead.c2s_context(ProtocolId::NtpV4))
+            .context("Could not extract session keys")?;
+        let s2c = extract_nts_key(&self.stream.conn, aead.s2c_context(ProtocolId::NtpV4))
+            .context("Could not extract session keys")?;
+
+        let c2s = Box::new(AesSivCmac256::new(c2s));
+        let s2c = Box::new(AesSivCmac256::new(s2c));
+
+        let keys = NtsKeys { c2s, s2c };
 
         let host = response.server.as_deref().unwrap_or(&self.host);
         let port = response.port.unwrap_or(123);
@@ -173,6 +194,20 @@ impl NtsKeConnection {
 
         Ok((response.cookies, udp_host, keys))
     }
+}
+
+fn extract_nts_key<T: Default + AsMut<[u8]>, ConnectionData>(
+    tls_connection: &rustls::ConnectionCommon<ConnectionData>,
+    context: [u8; 5],
+) -> Result<T, rustls::Error> {
+    let mut key = T::default();
+    tls_connection.export_keying_material(
+        &mut key,
+        b"EXPORTER-network-time-security",
+        Some(context.as_slice()),
+    )?;
+
+    Ok(key)
 }
 
 pub fn ke_test<F>(f: F) -> Box<dyn TestCase + UnwindSafe>

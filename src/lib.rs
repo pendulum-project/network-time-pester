@@ -32,7 +32,7 @@ pub struct NtsServer {
     port: u16,
     root_cert_store: Arc<RootCertStore>,
     udp_host: SocketAddr,
-    cookies: Mutex<(Vec<NtsCookie>, NtsKeys)>,
+    nts: Mutex<(Vec<NtsCookie>, Arc<NtsKeys>)>,
     timeout: Duration,
 }
 
@@ -53,7 +53,7 @@ impl NtsServer {
             port,
             root_cert_store,
             udp_host,
-            cookies: Mutex::new((cookies, keys)),
+            nts: Mutex::new((cookies, Arc::new(keys))),
             timeout,
         })
     }
@@ -62,17 +62,20 @@ impl NtsServer {
         self.udp_host
     }
 
-    pub fn take_cookie(&self) -> TestResult<NtsCookie> {
-        let mut cookies = self.cookies.lock().expect("No poisoned cookies");
+    pub fn take_cookie(&self) -> TestResult<(NtsCookie, Arc<NtsKeys>)> {
+        let mut guard = self.nts.lock().expect("No poisoned cookies");
 
-        if cookies.0.is_empty() {
-            self.refill(&mut cookies)?;
+        if guard.0.is_empty() {
+            self.refill(&mut guard)?;
         }
 
-        Ok(cookies.0.pop().expect("Just refilled the jar"))
+        Ok((
+            guard.0.pop().expect("Just refilled the jar"),
+            Arc::clone(&guard.1),
+        ))
     }
 
-    fn refill(&self, (cookies, keys): &mut (Vec<NtsCookie>, NtsKeys)) -> TestResult {
+    fn refill(&self, (cookies, keys): &mut (Vec<NtsCookie>, Arc<NtsKeys>)) -> TestResult {
         assert!(cookies.is_empty());
 
         let mut ke =
@@ -86,7 +89,7 @@ impl NtsServer {
         }
 
         cookies.extend(new_cookies);
-        *keys = new_keys;
+        let _old_keys = std::mem::replace(keys, Arc::new(new_keys));
 
         Ok(())
     }
@@ -126,12 +129,12 @@ impl TestConfig {
         }
     }
 
-    pub fn take_cookie_pair(&self) -> TestResult<[NtsCookie; 2]> {
+    pub fn take_cookie(&self) -> TestResult<(NtsCookie, Arc<NtsKeys>)> {
         let Server::Nts(server) = &self.server else {
             return Err(TestError::Skipped);
         };
 
-        Ok([server.take_cookie()?, server.take_cookie()?])
+        server.take_cookie()
     }
 }
 
