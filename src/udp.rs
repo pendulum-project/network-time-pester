@@ -1,3 +1,5 @@
+//! Functionality to contact and test a NTP server over UDP
+
 use crate::nts::NtsCookie;
 use crate::util::result::{fail, fail_no_response, TestResult, PASS};
 use crate::{TestCase, TestConfig};
@@ -10,13 +12,18 @@ use std::panic::UnwindSafe;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// An active connection to a NTP server
 pub struct UdpConnection {
     socket: UdpSocket,
 }
 
+/// A collection of bytes that make up a NTP request
+///
+/// Wrapping the bytes makes it harder to mix up with other buffers.
 pub struct UdpRequest(pub Vec<u8>);
 
 impl UdpRequest {
+    /// Turn a `NtpPacket` into bytes wrapped as a request, optionally with NTS encryption
     pub fn from_ntp_packet(packet: NtpPacket, keys: Option<&NtsKeys>) -> Self {
         let mut buffer = vec![0u8; UdpConnection::MAX_LEN];
         let mut cursor = Cursor::new(buffer.as_mut_slice());
@@ -39,6 +46,9 @@ impl From<NtpPacket<'_>> for UdpRequest {
     }
 }
 
+/// A collection of bytes that make up a NTP response
+///
+/// Wrapping the bytes makes it harder to mix up with other buffers.
 #[derive(Clone)]
 pub struct UdpResponse(pub Vec<u8>);
 
@@ -64,6 +74,7 @@ impl Debug for UdpResponse {
 impl UdpConnection {
     const MAX_LEN: usize = 9000;
 
+    /// Connect to the given host
     pub fn new(to_addr: impl ToSocketAddrs, timeout: Duration) -> TestResult<Self> {
         let mut to_addr = to_addr
             .to_socket_addrs()
@@ -90,6 +101,9 @@ impl UdpConnection {
         Ok(Self { socket })
     }
 
+    /// Send and receive raw bytes to the server
+    ///
+    /// Returns `Ok(None)` if the server did not reply.
     pub fn pester_raw(&mut self, req: UdpRequest) -> TestResult<Option<UdpResponse>> {
         self.socket
             .send(req.0.as_slice())
@@ -133,10 +147,16 @@ impl UdpConnection {
         Ok(Some(packet.into_owned()))
     }
 
+    /// Pester a server with a given packet
+    ///
+    /// Returning the response packet, or `None` if none was received.
     pub fn pester(&mut self, packet: NtpPacket) -> TestResult<Option<NtpPacket>> {
         self.pester_pkt(packet, None)
     }
 
+    /// Pester a server with even more safety (with NTS).
+    ///
+    /// Returning the decrypted response packet, or `None` if none was received.
     pub fn pester_nts(
         &mut self,
         packet: NtpPacket,
@@ -146,6 +166,9 @@ impl UdpConnection {
     }
 }
 
+/// Wrap a given function into a test case
+///
+/// Passes the function an active connection, and checks after the test if the server is still reachable.
 pub fn udp_test<F>(f: F) -> Box<dyn TestCase + UnwindSafe>
 where
     F: Fn(&mut UdpConnection) -> TestResult + UnwindSafe + 'static,
@@ -173,6 +196,7 @@ where
     Box::new(UdpTest { f })
 }
 
+/// Check if a given server still responds to normal requests
 pub fn udp_server_still_alive(
     conn: &mut UdpConnection,
     nts: Option<(NtsCookie, Arc<NtsKeys>)>,

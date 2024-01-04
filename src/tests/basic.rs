@@ -1,3 +1,5 @@
+//! Tests that exercise the base protocol described in [RFC5905](https://datatracker.ietf.org/doc/html/rfc5905).
+
 use crate::macros::*;
 use crate::udp::UdpConnection;
 use crate::util::result::{TestResult, PASS};

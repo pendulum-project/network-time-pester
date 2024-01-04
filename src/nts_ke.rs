@@ -1,3 +1,5 @@
+//! Functionality to connect to a NTS-KE server and run tests against it
+
 use crate::nts::NtsCookie;
 use crate::util::result::{fail, TestError, TestResult};
 use crate::{TestCase, TestConfig};
@@ -5,45 +7,18 @@ use anyhow::{anyhow, Context};
 use ntp_proto::{AeadAlgorithm, AesSivCmac256, NtsKeys, NtsRecord, NtsRecordDecoder, ProtocolId};
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
-use std::error::Error;
-use std::fmt::{Debug, Display, Formatter};
-use std::io;
+use std::fmt::Debug;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::panic::UnwindSafe;
 use std::sync::Arc;
 use std::time::Duration;
 
-#[derive(Debug)]
-pub enum RecvError {
-    ConnectionClosed,
-    Io(io::Error),
-}
-
-impl From<io::Error> for RecvError {
-    fn from(value: io::Error) -> Self {
-        Self::Io(value)
-    }
-}
-
-impl Display for RecvError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RecvError::ConnectionClosed => write!(f, "Connection was closed by server."),
-            RecvError::Io(inner) => write!(f, "IO error: {inner}"),
-        }
-    }
-}
-
-impl Error for RecvError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            RecvError::ConnectionClosed => None,
-            RecvError::Io(inner) => Some(inner),
-        }
-    }
-}
-
+/// An active connection to a NTS-KE server
+///
+/// This allows to send and receive records one at a time using [`send_record`](NtsKeConnection::send_record), and
+/// [`recv_record`](NtsKeConnection::recv_record). Or run a whole exchange using
+/// [`exchange`](NtsKeConnection::exchange), or [`do_request`](NtsKeConnection::do_request).
 pub struct NtsKeConnection {
     stream: StreamOwned<ClientConnection, TcpStream>,
     host: String,
@@ -51,6 +26,9 @@ pub struct NtsKeConnection {
 }
 
 impl NtsKeConnection {
+    /// Connect to the server given by `host` and `port`
+    ///
+    /// The `root_cert_store` is used to verify the server signature
     pub fn new(
         host: &str,
         port: u16,
@@ -93,32 +71,51 @@ impl NtsKeConnection {
         })
     }
 
-    pub fn send_record(&mut self, record: ntp_proto::NtsRecord) -> anyhow::Result<()> {
+    /// Serialize and send a single record to the server
+    pub fn send_record(&mut self, record: NtsRecord) -> TestResult {
         let mut buf = vec![];
-        record.write(&mut buf)?;
+        record
+            .write(&mut buf)
+            .expect("Writing into a vec can not fail");
 
-        self.stream.write_all(&buf[..])?;
+        self.stream
+            .write_all(&buf[..])
+            .context("Failed to write to TLS connection")?;
 
         Ok(())
     }
 
-    pub fn recv_record(&mut self) -> Result<ntp_proto::NtsRecord, RecvError> {
+    /// Try to receive the next record from the server
+    ///
+    /// Behaves similar to an iterator. Returns `Ok(Some(record))` until all records have been received when it returns
+    /// `Ok(None)`.
+    pub fn recv_record(&mut self) -> TestResult<Option<NtsRecord>> {
         loop {
-            if let Some(record) = self.record_decoder.step()? {
-                return Ok(record);
+            if let Some(record) = self
+                .record_decoder
+                .step()
+                .context("Could not read from NTS records")?
+            {
+                return Ok(Some(record));
             }
 
             let mut buf = vec![0; 1024];
-            let read_bytes = self.stream.read(&mut buf)?;
+            let read_bytes = self
+                .stream
+                .read(&mut buf)
+                .context("Could not read from TLS connection")?;
             buf.truncate(read_bytes);
             if buf.is_empty() {
-                return Err(RecvError::ConnectionClosed);
+                return Ok(None);
             }
 
             self.record_decoder.extend(buf);
         }
     }
 
+    /// Perform a complete exchange with the server
+    ///
+    /// This sends all the records provided by `request` in one go and then parses the response and returns it.
     pub fn exchange(
         &mut self,
         request: impl IntoIterator<Item = NtsRecord>,
@@ -133,8 +130,14 @@ impl NtsKeConnection {
         loop {
             let last = records.last();
             match self.recv_record() {
-                Ok(rec) => records.push(rec),
-                Err(RecvError::ConnectionClosed) if last == Some(&NtsRecord::EndOfMessage) => break,
+                Ok(Some(rec)) => records.push(rec),
+                Ok(None) if last == Some(&NtsRecord::EndOfMessage) => break,
+                Ok(None) => {
+                    return fail(
+                        "NTS-KE closed connection without sending EndOfMessage",
+                        records,
+                    )
+                }
                 Err(e) => Err(anyhow!(e).context("Could not read next record"))?,
             }
         }
@@ -143,6 +146,7 @@ impl NtsKeConnection {
         Ok(response)
     }
 
+    /// Perform a complete request/response cycle with default data, extracting all data needed to contact the UDP side.
     pub fn do_request(&mut self) -> TestResult<(Vec<NtsCookie>, SocketAddr, NtsKeys)> {
         let response = self.exchange([
             NtsRecord::NextProtocol {
@@ -210,6 +214,7 @@ fn extract_nts_key<T: Default + AsMut<[u8]>, ConnectionData>(
     Ok(key)
 }
 
+/// Wrap a function taking a fresh connection to a NTS-KE server, turning it into a [`TestCase`].
 pub fn ke_test<F>(f: F) -> Box<dyn TestCase + UnwindSafe>
 where
     F: Fn(&mut NtsKeConnection) -> TestResult + UnwindSafe + 'static,
@@ -235,6 +240,7 @@ where
     Box::new(KeTest { f })
 }
 
+/// Convenience wrapper around all fields needed for a NTS-KE request
 #[derive(Clone, Eq, PartialEq)]
 pub struct Request {
     pub next_protocol: Vec<u16>,
@@ -291,6 +297,7 @@ impl IntoIterator for Request {
     }
 }
 
+/// Convenience wrapper around all fields that can be contained in a NTS-KE response.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Response {
     pub next_protocol: Option<Vec<u16>>,
