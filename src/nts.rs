@@ -1,9 +1,14 @@
+//! Functions and types for implementing NTS tests
+
 use crate::udp::{udp_server_still_alive, UdpConnection};
 use crate::{RawBytes, TestCase, TestConfig, TestResult};
 use ntp_proto::NtsKeys;
 use std::ops::Deref;
 use std::panic::UnwindSafe;
 
+/// A wrapper for a NTS cookie
+///
+/// Using this wrapper ensures we can not mix up byte slices and improves debug printing.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct NtsCookie(pub RawBytes);
 
@@ -15,6 +20,12 @@ impl Deref for NtsCookie {
     }
 }
 
+/// Wrap a test function that requires a server connection, as well as NTS data
+///
+/// The function passed will be called during test execution. It gets passed a [`UdpConnection`] to the target server,
+/// as well as a valid NTS server cookie, and matching key set.
+///
+/// If the test completes successfully this wrapper checks if the server still replies to normal requests.
 pub fn nts_test<F>(f: F) -> Box<dyn TestCase + UnwindSafe>
 where
     F: Fn(&mut UdpConnection, NtsCookie, &NtsKeys) -> TestResult + UnwindSafe + 'static,

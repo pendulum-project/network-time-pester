@@ -1,3 +1,8 @@
+//! This module contains a collection of test cases
+//!
+//! Every test case is implemented as a function wrapped by one of [udp_test], [nts_test], or [ke_test]. This module is
+//! made public when the documentation is generated so that normal rust docstrings can be used the test cases.
+
 use crate::nts::nts_test;
 use crate::nts_ke::ke_test;
 use crate::udp::udp_test;

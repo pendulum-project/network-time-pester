@@ -1,3 +1,5 @@
+//! Tests that exercise the extension field mechanism described in [RFC5905 section 7.5](https://datatracker.ietf.org/doc/html/rfc5905#section-7.5)
+
 use crate::macros::*;
 use crate::udp::UdpConnection;
 use crate::util::result::{fail, TestResult, PASS};
