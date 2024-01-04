@@ -16,7 +16,6 @@ humantime = "2.1.0"
 
 rustls = "0.22.1"
 rustls-pemfile = "2.0.0"
-rustls-pki-types = "1.0.1"
 webpki-roots = "0.26.0"
 
 [patch.crates-io]

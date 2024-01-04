@@ -320,7 +320,6 @@ dependencies = [
  "ntp-proto",
  "rustls 0.22.1",
  "rustls-pemfile",
- "rustls-pki-types",
  "webpki-roots",
 ]
 
