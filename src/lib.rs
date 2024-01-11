@@ -1,143 +1,3 @@
-use anyhow::Context;
-use ntp_proto::{NoCipher, NtpPacket, PacketParsingError};
-use std::fmt::{Debug, Formatter};
-use std::io::{Cursor, ErrorKind};
-use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
-use std::time::Duration;
-
-macro_rules! pester_assert {
-    ($response:expr, $cond:expr $(,)?) => {
-        let condition = $cond;
-        if !condition {
-            return crate::fail(concat!("Assertion ", stringify!($cond), " failed"), $response);
-        }
-    };
-    ($response:expr, $cond:expr, $($arg:tt)+) => {
-        let condition = $cond;
-        if !condition {
-            return crate::fail(format!("Assertion {} failed: {}", stringify!($cond), format!($($arg)+)), $response);
-        }
-    };
-}
-
-macro_rules! pester_assert_eq {
-    ($response:expr, $actual:expr, $expected:expr $(,)?) => {
-        let a = $expected;
-        let b = $actual;
-        if a != b {
-            return crate::fail(format!("Assertion {} equal to {} failed, expected {:?}, actual {:?}", stringify!($actual), stringify!($expected), a, b), $response);
-        }
-    };
-    ($response:expr, $actual:expr, $expected:expr, $($arg:tt)+) => {
-        let a = $expected;
-        let b = $actual;
-        if a != b {
-            return crate::fail(format!("Assertion {} equal to {} failed, expected {:?}, actual {:?}: {}", stringify!($actual), stringify!($expected), a, b, format!($($arg)+)), $response);
-        }
-    };
-}
-
-#[allow(unused)]
-macro_rules! pester_assert_ne {
-    ($response:expr, $actual:expr, $expected:expr $(,)?) => {
-        let a = $expected;
-        let b = $actual;
-        if a == b {
-            return crate::fail(format!("Assertion {} not equal to {} failed, value {:?}", stringify!($actual), stringify!($expected), a), $response);
-        }
-    };
-    ($response:expr, $actual:expr, $expected:expr, $($arg:tt)+) => {
-        let a = $expected;
-        let b = $actual;
-        if a == b {
-            return crate::fail(format!("Assertion {} not equal to {} failed, value {:?}: {}", stringify!($actual), stringify!($expected), a, format!($($arg)+)), $response);
-        }
-    };
-}
-
-macro_rules! pester_assert_gt {
-    ($response:expr, $actual:expr, $expected:expr $(,)?) => {
-        let a = $expected;
-        let b = $actual;
-        if b <= a {
-            return crate::fail(format!("Assertion {} greater than {} failed, value {:?}, bound {:?}", stringify!($actual), stringify!($expected), b, a), $response);
-        }
-    };
-    ($response:expr, $actual:expr, $expected:expr, $($arg:tt)+) => {
-        let a = $expected;
-        let b = $actual;
-        if b <= a {
-            return crate::fail(format!("Assertion {} greater than {} failed, value {:?}, bound {:?}: {}", stringify!($actual), stringify!($expected), b, a, format!($($arg)+)), $response);
-        }
-    };
-}
-
-macro_rules! pester_assert_lt {
-    ($response:expr, $actual:expr, $expected:expr $(,)?) => {
-        let a = $expected;
-        let b = $actual;
-        if b >= a {
-            return crate::fail(format!("Assertion {} smaller than {} failed, value {:?}, bound {:?}", stringify!($actual), stringify!($expected), b, a), $response);
-        }
-    };
-    ($response:expr, $actual:expr, $expected:expr, $($arg:tt)+) => {
-        let a = $expected;
-        let b = $actual;
-        if b >= a {
-            return crate::fail(format!("Assertion {} smaller than {} failed, value {:?}, bound {:?}: {}", stringify!($actual), stringify!($expected), b, a, format!($($arg)+)), $response);
-        }
-    };
-}
-
-macro_rules! pester_assert_response {
-    ($response:expr $(,)?) => {
-        if let Some(r) = $response {
-            r
-        } else {
-            return crate::fail_no_response();
-        }
-    };
-}
-
-macro_rules! pester_assert_no_response {
-    ($response:expr $(,)?) => {
-        if let Some(r) = $response {
-            return crate::fail("Unexpected response from server", r);
-        }
-    };
-    ($response:expr, $($arg:tt)+) => {
-        if let Some(r) = $response {
-            return crate::fail(format!("Unexpected response from server: {}", format!($($arg)+)), r);
-        }
-    };
-}
-
-macro_rules! pester_assert_parsable {
-    ($response:expr $(,)?) => {
-        match ntp_proto::NtpPacket::try_from(&$response) {
-            Ok(packet) => packet,
-            Err(e) => return crate::fail(format!("Could not parse response: {e}"), $response),
-        }
-    };
-}
-
-macro_rules! pester_assert_version {
-    ($response:expr, $packet:expr, $version:ident $(,)?) => {
-        if let ntp_proto::NtpHeader::$version(h) = $packet.header() {
-            h
-        } else {
-            return crate::fail(
-                format!(
-                    "Server replied with version {} instead of {}",
-                    $packet.version(),
-                    stringify!($version),
-                ),
-                $response,
-            );
-        }
-    };
-}
-
 // This allows us to generate nice docs around our tests while we still get
 // warnings for unused test cases
 #[cfg(doc)]
@@ -145,131 +5,202 @@ pub mod tests;
 #[cfg(not(doc))]
 mod tests;
 
+pub(crate) mod macros;
+pub mod nts;
+pub mod nts_ke;
+pub mod udp;
+pub mod util;
+
+use crate::nts_ke::NtsKeConnection;
+use anyhow::anyhow;
+use ntp_proto::{NtsKeys, NtsRecord};
+use rustls::RootCertStore;
+use std::fmt::{Debug, Formatter};
+use std::fs::File;
+use std::io::BufReader;
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use crate::nts::NtsCookie;
 pub use tests::all_tests;
+pub use util::result::{TestError, TestResult};
 
-pub struct Connection {
-    socket: UdpSocket,
+#[derive(Debug)]
+pub struct NtsServer {
+    host: String,
+    port: u16,
+    root_cert_store: Arc<RootCertStore>,
+    udp_host: SocketAddr,
+    nts: Mutex<(Vec<NtsCookie>, Arc<NtsKeys>)>,
+    timeout: Duration,
 }
 
-pub struct Request(pub Vec<u8>);
+impl NtsServer {
+    pub fn new(
+        host: String,
+        port: u16,
+        ca_file: Option<PathBuf>,
+        timeout: Duration,
+    ) -> TestResult<Self> {
+        let root_cert_store = root_ca(ca_file)?;
 
-impl From<NtpPacket<'_>> for Request {
-    fn from(value: NtpPacket) -> Self {
-        let mut buffer = vec![0u8; Connection::MAX_LEN];
-        let mut cursor = Cursor::new(buffer.as_mut_slice());
+        let mut ke = NtsKeConnection::new(&host, port, &root_cert_store, timeout)?;
+        let (cookies, udp_host, keys) = ke.do_request()?;
 
-        value
-            .serialize(&mut cursor, &NoCipher, None)
-            .expect("Serializing into a vec can not fail");
-
-        let length = cursor.position() as usize;
-
-        buffer.truncate(length);
-
-        Self(buffer)
+        Ok(Self {
+            host,
+            port,
+            root_cert_store,
+            udp_host,
+            nts: Mutex::new((cookies, Arc::new(keys))),
+            timeout,
+        })
     }
-}
 
-#[derive(Clone)]
-pub struct Response(pub Vec<u8>);
-
-impl<'a> TryFrom<&'a Response> for NtpPacket<'a> {
-    type Error = PacketParsingError<'a>;
-
-    fn try_from(value: &'a Response) -> Result<Self, Self::Error> {
-        let (packet, _cookie) = NtpPacket::deserialize(value.0.as_slice(), &NoCipher)?;
-
-        Ok(packet)
+    pub fn udp_host(&self) -> SocketAddr {
+        self.udp_host
     }
-}
 
-impl Debug for Response {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Response")
-            .field("parsed", &NtpPacket::try_from(self))
-            .field("raw", &hex::encode(self.0.as_slice()))
-            .finish()
-    }
-}
+    pub fn take_cookie(&self) -> TestResult<(NtsCookie, Arc<NtsKeys>)> {
+        let mut guard = self.nts.lock().expect("No poisoned cookies");
 
-impl Connection {
-    const MAX_LEN: usize = 9000;
-    const TIMEOUT: Duration = Duration::from_millis(100);
-
-    pub fn new(to_addr: impl ToSocketAddrs) -> anyhow::Result<Self> {
-        let mut to_addr = to_addr
-            .to_socket_addrs()
-            .context("Could not parse peer address")?;
-        let to_addr = to_addr
-            .next()
-            .context("Domain did not resolve into any addresses")?;
-
-        let from_addr: SocketAddr = match to_addr {
-            SocketAddr::V4(_) => "0.0.0.0:0",
-            SocketAddr::V6(_) => "[::0]:0",
+        if guard.0.is_empty() {
+            self.refill(&mut guard)?;
         }
-        .parse()
-        .expect("no errors where made writing this address");
 
-        let socket = UdpSocket::bind(from_addr).context("Could not open socket")?;
-        socket
-            .connect(to_addr)
-            .with_context(|| format!("Can not connect to {to_addr} from {from_addr}"))?;
-        socket
-            .set_read_timeout(Some(Self::TIMEOUT))
-            .context("Could not set timeout")?;
-
-        Ok(Self { socket })
+        Ok((
+            guard.0.pop().expect("Just refilled the jar"),
+            Arc::clone(&guard.1),
+        ))
     }
 
-    pub fn pester(&mut self, req: impl Into<Request>) -> anyhow::Result<Option<Response>> {
-        self.socket
-            .send(req.into().0.as_slice())
-            .context("Could not send request")?;
+    fn refill(&self, (cookies, keys): &mut (Vec<NtsCookie>, Arc<NtsKeys>)) -> TestResult {
+        assert!(cookies.is_empty());
 
-        let mut response = vec![0; Self::MAX_LEN];
-        let len = match self.socket.recv(response.as_mut_slice()) {
-            Ok(len) => len,
-            Err(err) => match err.kind() {
-                ErrorKind::TimedOut | ErrorKind::WouldBlock => return Ok(None),
-                _ => return Err(err).context("Could not receive response"),
-            },
+        let mut ke =
+            NtsKeConnection::new(&self.host, self.port, &self.root_cert_store, self.timeout)?;
+        let (new_cookies, udp_host, new_keys) = ke.do_request()?;
+
+        if udp_host != self.udp_host {
+            return Err(TestError::Error(anyhow!(
+                "Server switched to which UDP host it points"
+            )));
+        }
+
+        cookies.extend(new_cookies);
+        let _old_keys = std::mem::replace(keys, Arc::new(new_keys));
+
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub enum Server {
+    Ntp(SocketAddr),
+    Nts(NtsServer),
+}
+
+#[derive(Debug)]
+pub struct TestConfig {
+    pub server: Server,
+    pub timeout: Duration,
+}
+
+impl TestConfig {
+    pub fn udp(&self) -> TestResult<udp::UdpConnection> {
+        let addr = match &self.server {
+            Server::Ntp(addr) => *addr,
+            Server::Nts(server) => server.udp_host(),
         };
-        response.truncate(len);
 
-        Ok(Some(Response(response)))
+        udp::UdpConnection::new(addr, self.timeout)
+    }
+
+    pub fn ke(&self) -> TestResult<NtsKeConnection> {
+        match &self.server {
+            Server::Ntp(_) => Err(TestError::Skipped),
+            Server::Nts(server) => NtsKeConnection::new(
+                &server.host,
+                server.port,
+                &server.root_cert_store,
+                server.timeout,
+            ),
+        }
+    }
+
+    pub fn take_cookie(&self) -> TestResult<(NtsCookie, Arc<NtsKeys>)> {
+        let Server::Nts(server) = &self.server else {
+            return Err(TestError::Skipped);
+        };
+
+        server.take_cookie()
+    }
+}
+
+pub fn root_ca(cafile: Option<PathBuf>) -> anyhow::Result<Arc<RootCertStore>> {
+    let mut root_cert_store = RootCertStore::empty();
+    if let Some(cafile) = &cafile {
+        let mut pem = BufReader::new(File::open(cafile)?);
+        for cert in rustls_pemfile::certs(&mut pem) {
+            root_cert_store.add(cert?).unwrap();
+        }
+    } else {
+        root_cert_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    }
+
+    Ok(Arc::new(root_cert_store))
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct RawBytes(pub Box<[u8]>);
+
+impl Debug for RawBytes {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        hex::encode(&self.0).fmt(f)
+    }
+}
+
+impl From<Vec<u8>> for RawBytes {
+    fn from(value: Vec<u8>) -> Self {
+        Self(value.into_boxed_slice())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Response {
+    UdpUnparsable(RawBytes),
+    UdpResponse(ntp_proto::NtpPacket<'static>),
+    KeResponse(nts_ke::Response),
+    KeInvalid(Vec<NtsRecord>),
+}
+
+impl From<udp::UdpResponse> for Response {
+    fn from(value: udp::UdpResponse) -> Self {
+        Self::UdpUnparsable(value.0.into())
+    }
+}
+
+impl<'a> From<ntp_proto::NtpPacket<'a>> for Response {
+    fn from(value: ntp_proto::NtpPacket<'a>) -> Self {
+        Self::UdpResponse(value.into_owned())
+    }
+}
+
+impl From<nts_ke::Response> for Response {
+    fn from(value: nts_ke::Response) -> Self {
+        Self::KeResponse(value)
+    }
+}
+
+impl From<Vec<NtsRecord>> for Response {
+    fn from(value: Vec<NtsRecord>) -> Self {
+        Self::KeInvalid(value)
     }
 }
 
 pub trait TestCase {
     fn name(&self) -> &'static str;
-    fn run(&self, conn: &mut Connection) -> anyhow::Result<TestResult>;
-}
-
-impl<F> TestCase for F
-where
-    F: Fn(&mut Connection) -> anyhow::Result<TestResult>,
-{
-    fn name(&self) -> &'static str {
-        std::any::type_name::<Self>()
-    }
-
-    fn run(&self, conn: &mut Connection) -> anyhow::Result<TestResult> {
-        self(conn)
-    }
-}
-
-pub enum TestResult {
-    Pass,
-    Fail(String, Option<Response>),
-}
-
-const PASS: anyhow::Result<TestResult> = Ok(TestResult::Pass);
-
-fn fail(msg: impl ToString, response: Response) -> anyhow::Result<TestResult> {
-    Ok(TestResult::Fail(msg.to_string(), Some(response)))
-}
-
-fn fail_no_response() -> anyhow::Result<TestResult> {
-    Ok(TestResult::Fail("Server did not respond".to_string(), None))
+    fn run(&self, conn: &TestConfig) -> TestResult;
 }
