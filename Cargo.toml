@@ -14,7 +14,7 @@ clap = { version = "4.4.10", features = ["derive"] }
 hex = "0.4.3"
 humantime = "2.1.0"
 
-rustls = "0.22.1"
+rustls = "0.22.4"
 rustls-pemfile = "2.0.0"
 webpki-roots = "0.26.0"
 
